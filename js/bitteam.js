@@ -19,6 +19,16 @@ module.exports = class bitteam extends Exchange {
         'fetchCurrencies': true,
         'fetchMarkets': true,
         'fetchTrades': true,
+        'fetchTicker': true,
+        'fetchOrderBook': true,
+        'fetchOHLCV': true,
+      },
+      'timeframes': {
+        '1m': '1',
+        '5m': '5',
+        '15m': '15',
+        '60m': '60',
+        '1d': '1D',
       },
       'urls': {},
       'api': {
@@ -27,6 +37,12 @@ module.exports = class bitteam extends Exchange {
             'currencies',
             'pairs',
             'trades',
+            'pair/{ticker}'
+          ]
+        },
+        'tw': {
+          'get': [
+            'tw/history/{pair}/{res}'
           ]
         }
       }
@@ -251,5 +267,155 @@ module.exports = class bitteam extends Exchange {
     //   }
     // ]
     return this.parseTrades (trades, market, since, limit);
+  }
+
+  parseTicker (ticker, market = undefined) {
+    const marketId = this.safeString (ticker, 'name');
+    market = this.safeMarket (marketId, market, '-');
+    const timestamp = this.milliseconds ();
+    const settings = this.safeValue (ticker, 'settings');
+    const high = this.safeString (settings, 'price_max');
+    const low = this.safeString (settings, 'price_min');
+    const last = this.safeNumber (ticker, 'lastPrice');
+    return {
+      'symbol': market['symbol'],
+      'info': ticker,
+      'timestamp': timestamp,
+      'datetime': this.iso8601 (timestamp),
+      'high': this.parseNumber (high),
+      'low': this.parseNumber (low),
+      'bid': undefined,
+      'bidVolume': undefined,
+      'ask': undefined,
+      'askVolume': undefined,
+      'vwap': undefined,
+      'open': undefined,
+      'close': last,
+      'last': last,
+      'previousClose': undefined,
+      'change': undefined,
+      'percentage': undefined,
+      'average': undefined,
+      'baseVolume': undefined,
+      'quoteVolume': undefined,
+    };
+  }
+
+  async fetchTicker (symbol, params = {}) {
+    await this.loadMarkets ();
+    const market = this.market (symbol);
+    const request = {
+      'ticker': market['id'],
+    };
+    const response = await this.publicGetPairTicker (this.extend (request, params));
+    const ticker = parseResponse (response, 'pair');
+    // {
+    //   "id": 6,
+    //   "name": "eth_del",
+    //   "baseAssetId": 2,
+    //   "quoteAssetId": 9,
+    //   "fullName": "ETH DEL",
+    //   "description": "ETH DEL pair",
+    //   "lastBuy": 12,
+    //   "lastSell": 12,
+    //   "lastPrice": 12,
+    //   "change24": 0,
+    //   "volume24": 4358,
+    //   "active": true,
+    //   "baseStep": 8,
+    //   "quoteStep": 8,
+    //   "status": 1,
+    //   "settings": {
+    //       "price_max": "1000000000000000",
+    //       "price_min": "1",
+    //       "price_tick": "1",
+    //       "lot_size_max": "1000000000000000",
+    //       "lot_size_min": "1",
+    //       "lot_size_tick": "1",
+    //       "price_max_quote": "1000000000000000",
+    //       "price_min_quote": "1",
+    //       "default_slippage": 10,
+    //       "price_tick_quote": "1",
+    //       "lot_size_max_quote": "1000000000000000",
+    //       "lot_size_min_quote": "1",
+    //       "lot_size_tick_quote": "1"
+    //   },
+    //   "asks": [
+    //       {
+    //           "price": "15",
+    //           "amount": "120",
+    //           "quantity": "8"
+    //       },
+    //       {
+    //           "price": "16",
+    //           "amount": "48",
+    //           "quantity": "3"
+    //       },
+    //       {
+    //           "price": "18",
+    //           "amount": "18",
+    //           "quantity": "1"
+    //       },
+    //       {
+    //           "price": "19",
+    //           "amount": "247",
+    //           "quantity": "13"
+    //       }
+    //   ],
+    //   "bids": [
+    //       {
+    //           "price": "12",
+    //           "amount": "132",
+    //           "quantity": "11"
+    //       },
+    //       {
+    //           "price": "11",
+    //           "amount": "352",
+    //           "quantity": "32"
+    //       },
+    //       {
+    //           "price": "10",
+    //           "amount": "330",
+    //           "quantity": "33"
+    //       }
+    //   ],
+    //   "updateId": "1",
+    //   "timeStart": "2021-02-01T06:10:48.846Z",
+    //   "makerFee": 200,
+    //   "takerFee": 200,
+    //   "baseCurrency.id": 2,
+    //   "baseCurrency.symbol": "eth",
+    //   "baseCurrency.decimals": 18,
+    //   "quoteCurrency.id": 9,
+    //   "quoteCurrency.symbol": "del",
+    //   "quoteCurrency.decimals": 18
+    // }
+    return this.parseTicker (ticker, market);
+  }
+
+  async fetchOrderBook (symbol, limit = undefined, params = {}) {
+    await this.loadMarkets ();
+    const market = this.market (symbol);
+    const request = {
+      'ticker': market['id'],
+    };
+    const response = await this.publicGetPairTicker (this.extend (request, params));
+    const ticker = parseResponse (response, 'pair');
+    return this.parseOrderBook (ticker, symbol);
+  }
+
+  async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
+    await this.loadMarkets ();
+    const market = this.market (symbol);
+    const request = {
+      'pair': market['symbol'],
+      'res': this.timeframes[timeframe],
+    }
+    if (since !== undefined) {
+      request['from'] = since;
+    }
+    const response = await this.twGetTwHistoryPairRes (this.extend (request, params));
+    const ohlcvs = this.parseResponse (response, 'data').map((i) => Object.values (i));
+    return this.parseOHLCVs (ohlcvs, market, timeframe, since, limit);
   }
 }
