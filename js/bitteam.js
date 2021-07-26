@@ -84,15 +84,15 @@ module.exports = class bitteam extends Exchange {
     const result = [];
     for (let i = 0; i < currencies.length; i++) {
       const entity = currencies[i];
-      const id = this.safeString(entity, 'id');
-      const code = this.safeString(entity, 'symbol');
-      const name = this.safeString(entity, 'title');
-      const active = this.safeValue(entity, 'active');
-      const tx = this.safaValue(entity, 'txLimits');
-      const fee = this.safeNumber(tx, 'withdrawCommissionFixed');
-      const precision = this.safeNumber(entity, 'decimals');
-      const wMin = this.safeNumber(tx, 'minWithdraw');
-      const wMax = this.safeNumber(tx, 'maxWithdraw');
+      const id = this.safeString (entity, 'symbol');
+      const code = this.safeCurrencyCode (id);
+      const name = this.safeString (entity, 'title');
+      const active = this.safeValue (entity, 'active');
+      const tx = this.safeValue (entity, 'txLimits');
+      const fee = this.safeNumber (tx, 'withdrawCommissionFixed');
+      const precision = this.safeNumber (entity, 'decimals');
+      const wMin = this.safeNumber (tx, 'minWithdraw');
+      const wMax = this.safeNumber (tx, 'maxWithdraw');
       result.push({
         'id': id,
         'code': code,
@@ -106,18 +106,21 @@ module.exports = class bitteam extends Exchange {
             'max': wMax,
           },
         },
+        'info': entity,
       });
     }
     return result;
   }
 
   convertMarket (market) {
-    const id = market.name.replace('_', '');
-    const symbol = market.fullName.replace(' ', '/');
-    const base = market.fullName.split(' ')[0];
-    const quote = market.fullName.split(' ')[1];
-    const baseId = base.toLowerCase();
-    const quoteId = quote.toLowerCase();
+    const id = this.safeString (market, 'name');
+    const baseId = market.fullName.split(' ')[0];
+    const quoteId = market.fullName.split(' ')[1];
+    const base = this.safeCurrencyCode (baseId);
+    const quote = this.safeCurrencyCode (quoteId);
+    const symbol = base + '/' + quote;
+    const baseId = this.safeString (market, 'baseAssetId');
+    const quoteId = this.safeString (market, 'quoteAssetId');
     const active = this.safeValue(market, 'active');
     const taker = this.safeNumber(market, 'takerFee');
     const maker = this.safeNumber(market, 'makerFee');
@@ -150,7 +153,7 @@ module.exports = class bitteam extends Exchange {
 
   async fetchMarkets (params = {}) {
     const response = await this.publicGetPairs (params);
-    const markets = this.parseResponse(response, 'pairs');
+    const markets = this.parseResponse (response, 'pairs');
     // [
     //   {
     //       "id": 2,
@@ -191,7 +194,7 @@ module.exports = class bitteam extends Exchange {
     // ]
     const result = [];
     for (let i = 0; i < markets.length; i ++) {
-      result.push(this.convertMarket(markets[i]));
+      result.push (this.convertMarket (markets[i]));
     }
     return result;
   }
@@ -408,7 +411,7 @@ module.exports = class bitteam extends Exchange {
     await this.loadMarkets ();
     const market = this.market (symbol);
     const request = {
-      'pair': market['symbol'],
+      'pair': market['id'],
       'res': this.timeframes[timeframe],
     }
     if (since !== undefined) {
