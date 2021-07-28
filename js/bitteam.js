@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 
 const Exchange = require ('./base/Exchange');
-const { AccountSuspended, BadRequest, ExchangeError, ExchangeNotAvailable, AuthenticationError, InsufficientFunds, InvalidOrder, OnMaintenance, OrderNotFound, PermissionDenied, RateLimitExceeded } = require ('./base/errors');
+const { ArgumentsRequired } = require ('./base/errors');
 const type = require('./base/functions/type');
 
 // ----------------------------------------------------------------------------
@@ -22,6 +22,8 @@ module.exports = class bitteam extends Exchange {
         'fetchTicker': true,
         'fetchOrderBook': true,
         'fetchOHLCV': true,
+        'fetchOrder': true,
+        'fetchOpenOrders': true,
       },
       'timeframes': {
         '1m': '1',
@@ -40,6 +42,12 @@ module.exports = class bitteam extends Exchange {
             'pair/{ticker}'
           ]
         },
+        'private': {
+          'get': [
+            'order/{id}',
+            'ordersByUser',
+          ],
+        },
         'tw': {
           'get': [
             'tw/history/{pair}/{res}'
@@ -49,10 +57,37 @@ module.exports = class bitteam extends Exchange {
     })
   }
 
+  sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
+    const query = this.omit (params, this.extractParams (path));
+    let url = this.urls['api'][api] + '/';
+    if (api === 'public') {
+      if (Object.keys (query).length) {
+          url += '?' + this.urlencode (query);
+      }
+    } else {
+      this.checkRequiredCredentials ();
+      const nonce = this.nonce ().toString ();
+      body = this.json (query);
+      let auth = nonce;
+      auth += '/' + path + body;
+      headers = {
+        'Content-Type': 'application/json',
+        'ACCESS-KEY': this.apiKey,
+        'ACCESS-TIMESTAMP': this.nonce (),
+        'ACCESS-SIGN': this.hmac (this.encode (auth), this.encode (this.secret)),
+      };
+    }
+    return { 'url': url, 'method': method, 'body': body, 'headers': headers };
+  }
+
   parseResponse (response, field) {
     const data = this.safeValue (response, 'result');
-    const parsedResponse = this.safeValue (data, field);
-    return parsedResponse;
+    if (field !== undefined) {
+      const parsedResponse = this.safeValue (data, field);
+      return parsedResponse;
+    } else {
+      return data;
+    }
   }
 
   async fetchCurrencies (params = {}) {
@@ -121,17 +156,18 @@ module.exports = class bitteam extends Exchange {
     const symbol = base + '/' + quote;
     const baseId = this.safeString (market, 'baseAssetId');
     const quoteId = this.safeString (market, 'quoteAssetId');
-    const active = this.safeValue(market, 'active');
-    const taker = this.safeNumber(market, 'takerFee');
-    const maker = this.safeNumber(market, 'makerFee');
+    const active = this.safeValue (market, 'active');
+    const taker = this.safeNumber (market, 'takerFee');
+    const maker = this.safeNumber (market, 'makerFee');
     const precision = {
-      'base': this.safeNumber(market, 'baseStep'),
-      'quote': this.safeNumber(market, 'quoteStep'),
+      'base': this.safeNumber (market, 'baseStep'),
+      'quote': this.safeNumber (market, 'quoteStep'),
     };
+    const settings = this.safeValue (market, 'settings');
     const limits = {
       'price': {
-        'min': market.settings.price_min,
-        'max': market.settings.price_max,
+        'min': parseFloat (this.safeString (settings, 'price_min')),
+        'max': parseFloat (this.safeString (settings, 'price_max')),
       },
     };
     const entry = {
@@ -200,7 +236,7 @@ module.exports = class bitteam extends Exchange {
   }
 
   parseTrade (trade, market = undefined) {
-    const id = this.safeString (trade, 'id');
+    const id = this.safeString (trade, 'tradeId');
     const timestamp = this.safeNumber (trade, 'timestamp');
     const marketId = this.safeString (trade, 'pair');
     market = this.safeMarket (marketId, market, '-');
@@ -276,17 +312,13 @@ module.exports = class bitteam extends Exchange {
     const marketId = this.safeString (ticker, 'name');
     market = this.safeMarket (marketId, market, '-');
     const timestamp = this.milliseconds ();
-    const settings = this.safeValue (ticker, 'settings');
-    const high = this.safeString (settings, 'price_max');
-    const low = this.safeString (settings, 'price_min');
-    const last = this.safeNumber (ticker, 'lastPrice');
     return {
       'symbol': market['symbol'],
       'info': ticker,
       'timestamp': timestamp,
       'datetime': this.iso8601 (timestamp),
-      'high': this.parseNumber (high),
-      'low': this.parseNumber (low),
+      'high': undefined,
+      'low': undefined,
       'bid': undefined,
       'bidVolume': undefined,
       'ask': undefined,
@@ -420,5 +452,101 @@ module.exports = class bitteam extends Exchange {
     const response = await this.twGetTwHistoryPairRes (this.extend (request, params));
     const ohlcvs = this.parseResponse (response, 'data').map((i) => Object.values (i));
     return this.parseOHLCVs (ohlcvs, market, timeframe, since, limit);
+  }
+
+  parseOrder (order, market = undefined) {
+    const id = parseInt (this.safeNumber (order, 'id'));
+    const clientOrderId = this.safeString (order, 'orderCid');
+    const timestamp = this.safeNumber (order, 'timestamp');
+    const datetime = this.iso8601 (timestamp);
+    let status = undefined;
+    const orderStatus = this.safeString (order, 'status');
+    if (orderStatus === 'created' || orderStatus === 'executing') {
+      status = 'open';
+    } else if (orderStatus === 'cancelled') {
+      status = 'canceled';
+    } else if (orderStatus === 'accepted' || orderStatus === 'rejected') {
+      status = 'closed';
+    } else {
+      status = 'expired';
+    }
+    const marketId = this.safeStringUpper (order, 'pair');
+    const symbol = this.safeSymbol (marketId, market, '_');
+    const type = this.safeString (order, 'type');
+    const side = this.safeString (order, 'side');
+    const price = parseFloat (this.safeNumber (order, 'price'));
+    const amount = this.safeNumber (order, 'quantity');
+    let fee = undefined;
+    const orderFee = this.safeValue (order, 'fee');
+    if (orderFee !== undefined) {
+      fee = {
+        'currency': this.safeCurrencyCode (orderFee, 'symbol'),
+        'cost': this.safeNumber (orderFee, 'amount'),
+      }
+    }
+    return this.safeOrder ({
+      'info': order,
+      'id': id,
+      'clientOrderId': clientOrderId,
+      'timestamp': timestamp,
+      'datetime': datetime,
+      'lastTradeTimestamp': undefined,
+      'status': status,
+      'symbol': symbol,
+      'type': type,
+      'timeInForce': undefined,
+      'side': side,
+      'price': price,
+      'average': undefined,
+      'amount': amount,
+      'filled': undefined,
+      'remaining': undefined,
+      'cost': undefined,
+      'trades': undefined,
+      'fee': fee,
+    })
+  }
+
+  async fetchOrder (id, symbol = undefined, params = {}) {
+    if (id === undefined) {
+      throw new ArgumentsRequired ('fetchOrder() requires a id argument');
+    }
+    const request = {
+      'id': parseInt (id),
+    };
+    const response = await this.privateGetOrderId (this.extend (request, params));
+    const order = this.parseResponse (response);
+    // {
+    //   "id": 215029,
+    //   "orderId": "2166",
+    //   "userId": 4,
+    //   "pair": "eth_usdt",
+    //   "pairId": 3,
+    //   "quantity": 1000000000000000000,
+    //   "price": 19000000,
+    //   "fee": null,
+    //   "orderCid": "1625747606351",
+    //   "executed": 0,
+    //   "expires": null,
+    //   "baseDecimals": 18,
+    //   "quoteDecimals": 6,
+    //   "timestamp": 1625747606,
+    //   "status": "accepted",
+    //   "side": "buy",
+    //   "type": "limit"
+    // }
+    return this.parseOrder (order);
+  }
+
+  async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+    await this.loadMarkets ();
+    const market = this.market (symbol);
+    const request = {
+      'limit': limit,
+      'type': 'active',
+    };
+    const response = await this.privateGetOrdersByUser (this.extend (request, params));
+    const orders = this.parseResponse (response, 'orders');
+    return this.parseOrders (orders, market, since, limit);
   }
 }
