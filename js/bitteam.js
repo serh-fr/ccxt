@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 
 const Exchange = require ('./base/Exchange');
-const { ArgumentsRequired } = require ('./base/errors');
+const { ArgumentsRequired, ExchangeError } = require ('./base/errors');
 const type = require('./base/functions/type');
 
 // ----------------------------------------------------------------------------
@@ -24,6 +24,12 @@ module.exports = class bitteam extends Exchange {
         'fetchOHLCV': true,
         'fetchOrder': true,
         'fetchOpenOrders': true,
+        'fetchOrders': true,
+        'fetchClosedOrders': true,
+        'fetchMyTrades': true,
+        'fetchDepositAddress': true,
+        'fetchDeposits': true,
+        'fetchWithdrawals': true,
       },
       'timeframes': {
         '1m': '1',
@@ -46,6 +52,9 @@ module.exports = class bitteam extends Exchange {
           'get': [
             'order/{id}',
             'ordersByUser',
+            'tradesByUser',
+            'address/{currencyId}',
+            'transactions/{type}',
           ],
         },
         'tw': {
@@ -239,7 +248,7 @@ module.exports = class bitteam extends Exchange {
     const id = this.safeString (trade, 'tradeId');
     const timestamp = this.safeNumber (trade, 'timestamp');
     const marketId = this.safeString (trade, 'pair');
-    market = this.safeMarket (marketId, market, '-');
+    market = this.safeMarket (marketId, market, '_');
     const side = this.safeString (trade, 'side');
     const isMaker = this.safeValue (trade, 'isBuyerMaker');
     const takerOrMaker = isMaker ? 'maker' : 'taker';
@@ -260,7 +269,7 @@ module.exports = class bitteam extends Exchange {
     }
   }
 
-  async fetchTrades (symbol, since = undefined, limit = 10, params = {}) {
+  async fetchTrades (symbol, since = undefined, limit = undefined, params = {}) {
     await this.loadMarkets ();
     const market = this.market (symbol);
     const request = {
@@ -538,15 +547,162 @@ module.exports = class bitteam extends Exchange {
     return this.parseOrder (order);
   }
 
-  async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+  async fetchOrdersByStatus (status, symbol = undefined, since = undefined, limit = undefined, params = {}) {
     await this.loadMarkets ();
     const market = this.market (symbol);
     const request = {
       'limit': limit,
-      'type': 'active',
-    };
+      'type': status,
+    }
     const response = await this.privateGetOrdersByUser (this.extend (request, params));
     const orders = this.parseResponse (response, 'orders');
     return this.parseOrders (orders, market, since, limit);
+  }
+
+  async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+    return await this.fetchOrdersByStatus('active', symbol, since, limit, params);
+  }
+
+  async fetchOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+    return await this.fetchOrdersByStatus('all', symbol, since, limit, params);
+  }
+
+  async fetchClosedOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+    return await this.fetchOrdersByStatus('closed', symbol, since, limit, params);
+  }
+
+  async fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+    await this.loadMarkets ();
+    const market = this.market (symbol);
+    const request = {
+      'limit': limit,
+      'pairId': market['id'],
+    };
+    const response = await this.privateGetTradesByUser (this.extend (request, params));
+    const trades = this.parseResponse (response, 'trades');
+    return this.parseTrades (trades, market, since, limit);
+  }
+
+  parseAddress (wallet) {
+    const address = this.safeString (wallet, 'address');
+    this.checkAddress (address);
+    return {
+      'currency': code,
+      'address': address,
+      'tag': undefined,
+      'info': wallet,
+    };
+  }
+
+  async fetchDepositAddress (code, params = {}) {
+    await this.loadMarkets ();
+    const currency = this.currency (code);
+    const request = {
+      'currencyId': currency['id'],
+    };
+    const response = await this.privateGetAddressCurrencyId (this.extend (request, params));
+    const wallet = this.parseResponse (response, 'wallet');
+    // {
+    //   "id": "441a8db2-fa2d-4568-963b-e8c872f76777",
+    //   "balance": "0",
+    //   "lockedBalance": "0",
+    //   "balancep2p": "0",
+    //   "symbolId": 7,
+    //   "symbol": "btc",
+    //   "settings": {},
+    //   "address": "mo185BSen7ZyELXgnVWmwfNV9NGLaDk56R",
+    //   "type": "crypto"
+    // }
+    return this.parseAddress (wallet);
+  }
+
+  parseTransaction (transaction, currency = undefined) {
+    const id = this.safeString (transaction, 'id');
+    const timestamp = this.safeNumber (transaction, '1617710037274');
+    const datetime = this.iso8601 (timestamp);
+    const addressFrom = this.safeString (transaction, 'sender');
+    const addressTo = this.safeString (transaction, 'recipient');
+    const type = this.safeString (transaction, 'type');
+    const amount = this.safeString (transaction, 'amount');
+    const currency = this.safeValue (transaction, 'currency');
+    const currencyId = this.safeString (currency, 'symbol');
+    const code = this.safeCurrencyCode (currencyId, currency);
+    let status = undefined;
+    const txStatus = this.safeNumber (transaction, 'status');
+    if (txStatus === 1) {
+      status = 'ok';
+    }
+    if (txStatus === -1) {
+      status = 'failed';
+    }
+    if (txStatus === 2 || txStatus === 3) {
+      status = 'pending';
+    }
+    return {
+      'info': transaction,
+      'id': id,
+      'txid': undefined,
+      'timestamp': timestamp,
+      'datetime': datetime,
+      'addressFrom': addressFrom,
+      'address': addressFrom,
+      'addressTo': addressTo,
+      'tagFrom': undefined,
+      'tag': undefined,
+      'tagTo': undefined,
+      'type': type,
+      'amount': amount,
+      'currency': code,
+      'status': status,
+      'updated': undefined,
+      'comment': undefined,
+      'fee': undefined,
+    }
+  }
+
+  async fetchTransactionsByType (type, code = undefined, since = undefined, limit = undefined, params = {}) {
+    await this.loadMarkets ();
+    const request = {
+      'limit': limit,
+      'type': type,
+    };
+    let currency = undefined;
+    if (code !== undefined) {
+      currency = this.currenc (code);
+      request['currency'] = currency['id'];
+    }
+    const response = await this.privateGetTransactionsType (this.extend (request, params));
+    const transactions = this.parseResponse (response, 'transactions');
+    // {
+    //   "id": 29,
+    //   "orderId": "d2b05b99-9e03-466b-bdf1-2899e85aaf48",
+    //   "withdrawId": "1",
+    //   "userId": 2,
+    //   "recipient": "0x15e0e3004Ac2Ef7766a3E8747eDf43Cf375426A3",
+    //   "sender": "0x6967FdB6870D4257A223c417E859435420D3F732",
+    //   "symbolId": 8,
+    //   "CommissionId": 1,
+    //   "amount": "12000000000000000000",
+    //   "params": {},
+    //   "reason": "deposit",
+    //   "timestamp": 1617710037274,
+    //   "status": 3,
+    //   "type": "withdraw",
+    //   "message": null,
+    //   "currency": {
+    //       "symbol": "eth",
+    //       "decimals": 18,
+    //       "blockChain": "Ethereum"
+    //   }
+    // }
+    return this.parseTransactions (transactions, currency, since, limit);
+  }
+
+  async fetchDeposits (code = undefined, since = undefined, limit = undefined, params = {}) {
+    return this.fetchTransactionsByType ('deposit', code, since, limit, params);
+  }
+
+  async fetchWithdrawals (code = undefined, since = undefined, limit = undefined, params = {}) {
+    return this.fetchTransactionsByType ('withdraw', code, since, limit, params);
   }
 }
