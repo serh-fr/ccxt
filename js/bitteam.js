@@ -59,7 +59,7 @@ module.exports = class bitteam extends Exchange {
                         'ccxt/balance',
                     ],
                     'post': [
-                        '/order',
+                        'ccxt/ordercreate',
                     ]
                 },
                 'tw': {
@@ -696,7 +696,7 @@ module.exports = class bitteam extends Exchange {
 
     async fetchBalance(params = {}) {
         await this.loadMarkets();
-        const balance = await this.privateGetBalance(params);
+        const balance = await this.privateGetccxtBalance(params);
         // {
         //   "info": {
         //   "free": {
@@ -759,7 +759,7 @@ module.exports = class bitteam extends Exchange {
         if (type === 'limit') {
             request['price'] = this.priceToPrecision (symbol, price);
         }
-        const res = await this.privatePostOrder (this.extend (request, params));
+        const res = await this.privatePostccxtOrder (this.extend (request, params));
         const response = this.parseResponse(res);
         const id = this.safeString (response['payload'], 'id');
         return {
